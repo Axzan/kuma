@@ -16,7 +16,10 @@ class KumaParams(torch.nn.Module):
         self.layerb=torch.nn.Linear(2*hlstm,hlinear)
         self.finala=torch.nn.Linear(hlinear,1)
         self.finalb=torch.nn.Linear(hlinear,1)
-        self.softplus=torch.nn.Softplus()
+        # Initialize biases negative so exp(final(...)) is small initially,
+        # encouraging zero selections before learning starts.
+        torch.nn.init.constant_(self.finala.bias, -3.0)
+        torch.nn.init.constant_(self.finalb.bias, -3.0)
     
     def forward(self,x):
         #x.shape : (B,N,H)
@@ -28,11 +31,12 @@ class KumaParams(torch.nn.Module):
         x_b = torch.relu(self.layerb(enc))
         #shapes : (B,N,hlinear)
         
-        out_a=self.softplus(self.finala(x_a))
-        out_b=self.softplus(self.finalb(x_b))
-        #shapes : (B,N)
+        out_a = torch.exp(self.finala(x_a)).squeeze(-1)
+        out_b = torch.exp(self.finalb(x_b)).squeeze(-1)
+        #shapes : (B,N) even when N==1
+        #fixed the squeeze that could collapse into a and b into 1D tensors.
         
-        return out_a.squeeze(),out_b.squeeze()
+        return out_a, out_b
     
 
 
@@ -40,11 +44,12 @@ class KumaParams(torch.nn.Module):
 
 class KumaSelector(torch.nn.Module):
     
-    def __init__(self, H, l, r, hlstm=128, hlinear=64):
+    def __init__(self, H, l, r, hlstm=128, hlinear=64,DEBUG=False):
         super().__init__()
         self.l=l
         self.r=r
         self.Kumaparams=KumaParams(H,hlstm,hlinear)
+        self._DEBUG=DEBUG
 
     def forward(self,x):
         #x.shape : (B,N,H)
@@ -52,7 +57,7 @@ class KumaSelector(torch.nn.Module):
         a,b=self.Kumaparams(x)
         #shape : (B,N) , (B,N)
         
-        mask=sample.diffsamp_HKuma(a,b,self.l,self.r)
+        mask=sample.diffsamp_HKuma(a,b,self.l,self.r,self._DEBUG)
         #shape : (B,N)
 
         return mask,a,b

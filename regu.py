@@ -2,9 +2,7 @@ import torch
 from . import utils
 
 
-
-
-def E_L0loss(a: torch.Tensor, b: torch.Tensor, l: float,r: float, sequencedim : int = -1, batchdim : int = 0 ):
+def E_L0loss(a: torch.Tensor, b: torch.Tensor, l: float,r: float,DEBUG:bool=False):
     """ Computes the expectation of the L0 loss of the HardKuma samples (number of non zero samples) and averages it by batch.
 
     Args:
@@ -22,15 +20,15 @@ def E_L0loss(a: torch.Tensor, b: torch.Tensor, l: float,r: float, sequencedim : 
         loss (torch.Tensor): value of the expected L0 loss averaged by batch
     """
     
-    _,prob_nonzero=utils.get_probnull(a,b,l,r)
+    _,prob_nonzero=utils.get_probnull(a,b,l,r,DEBUG)
     
-    batch_loss=prob_nonzero.sum(dim=sequencedim)
+    batch_loss=prob_nonzero.sum(-1)
     
-    regloss=batch_loss.mean(dim=batchdim)
+    regloss=batch_loss.mean(0)/prob_nonzero.size(-1)
     
     return regloss
 
-def E_FusedLassoloss(a: torch.Tensor,b: torch.Tensor,l: float,r: float):
+def E_FusedLassoloss(a: torch.Tensor,b: torch.Tensor,l: float,r: float,DEBUG:bool=False):
     """Computes the expectation of the fused lasso loss.
 
     Args:
@@ -43,30 +41,34 @@ def E_FusedLassoloss(a: torch.Tensor,b: torch.Tensor,l: float,r: float):
         _type_: _description_
     """
     
-    prob_zero,prob_nonzero=utils.get_probnull(a,b,l,r)
-    
-    #shape : (B,N) 
-    
-    z_to_nonzprob=torch.mul(prob_zero[:,:-1],prob_nonzero[:,1:])
-    
-    nonz_to_zprob=torch.mul(prob_nonzero[:,:-1],prob_zero[:,1:])
-    
-    switchprob=z_to_nonzprob+nonz_to_zprob
-    
-    #shapes au dessus (B,N-1)
-    
-    batchloss=switchprob.sum(dim=1)         #(B)
-    
-    regloss=batchloss.mean()
-    
+    prob_zero, prob_nonzero = utils.get_probnull(a, b, l, r, DEBUG)
+
+    # Ensure we have batch x sequence dims in all cases
+    if prob_zero.dim() == 1:
+        prob_zero = prob_zero.unsqueeze(1)
+        prob_nonzero = prob_nonzero.unsqueeze(1)
+
+    # If sequence length is 1, there are no transitions (fused lasso is 0)
+    if prob_zero.size(1) < 2:
+        return torch.tensor(0.0, device=prob_zero.device, dtype=prob_zero.dtype)
+
+    z_to_nonzprob = torch.mul(prob_zero[:, :-1], prob_nonzero[:, 1:])
+    nonz_to_zprob = torch.mul(prob_nonzero[:, :-1], prob_zero[:, 1:])
+    switchprob = z_to_nonzprob + nonz_to_zprob
+
+    # shapes now (B,N-1)
+    batchloss = switchprob.sum(1)  # (B)
+    regloss = batchloss.mean()
     return regloss
 
-def CE_sparseconnected_loss(pred: torch.Tensor,label: torch.Tensor,gamma0: float, gamma1: float,a: torch.Tensor, b: torch.Tensor, l: float , r: float):
+def CE_sparseconnected_loss(pred: torch.Tensor,label: torch.Tensor,gamma0: float, gamma1: float,a: torch.Tensor, b: torch.Tensor, l: float , r: float,DEBUG:bool=False):
     
-    assert l<0
-    assert r>1
-    assert gamma0>=0
-    assert gamma1>=0
+    
+    if DEBUG:
+        assert l<0
+        assert r>1
+        assert gamma0>=0
+        assert gamma1>=0
     
     #pred.shape : (B,nclasses)
     #label.shape : (B) ou (B,1)?
@@ -77,8 +79,8 @@ def CE_sparseconnected_loss(pred: torch.Tensor,label: torch.Tensor,gamma0: float
     
     taskloss=torch.nn.functional.cross_entropy(pred,label,reduction="mean")
     
-    reg0loss=E_L0loss(a,b,l,r)
+    reg0loss=E_L0loss(a,b,l,r,DEBUG)
     
-    reg1loss=E_FusedLassoloss(a,b,l,r)
+    reg1loss=E_FusedLassoloss(a,b,l,r,DEBUG)
     
     return taskloss+gamma0*reg0loss+gamma1*reg1loss
